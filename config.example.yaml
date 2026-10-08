@@ -1,0 +1,49 @@
+# pgsentry example configuration.
+#
+# The database password is NOT configured here (the file is rejected if it has a
+# `password` key). Provide it with one of:
+#   PGSENTRY_DB_PASSWORD=...            environment variable
+#   PGSENTRY_DB_PASSWORD_FILE=/path     file, e.g. a mounted Kubernetes Secret
+# Host, port, dbname, user and sslmode can also be overridden with
+# PGSENTRY_DB_HOST / _PORT / _NAME / _USER / _SSLMODE.
+
+postgres:
+  host: localhost
+  port: 5432
+  dbname: postgres
+  user: pgsentry
+  sslmode: prefer
+  connect_timeout: 5
+  statement_timeout_ms: 5000
+  expected_role: primary      # primary | replica | omit to skip the check
+  expected_replicas: 1        # streaming replicas the primary should have; 0 = do not check
+
+thresholds:                    # warn / crit, higher is worse
+  replication_lag_bytes: { warn: 16777216, crit: 268435456 }       # 16 MiB / 256 MiB
+  replication_lag_seconds: { warn: 30, crit: 300 }
+  slot_retained_bytes: { warn: 1073741824, crit: 10737418240 }     # 1 GiB / 10 GiB
+  connection_usage_ratio: { warn: 0.80, crit: 0.95 }
+  long_transaction_seconds: { warn: 300, crit: 3600 }
+
+backup:                        # leave both unset to skip the backup-age check
+  # file: /var/lib/pgsentry/last_backup   # ISO-8601 timestamp inside, or the file mtime
+  # s3:
+  #   bucket: my-backups
+  #   key: postgres/last_success          # LastModified of this object is used
+  warn_hours: 26
+  crit_hours: 50
+
+kubernetes:
+  namespace: default
+  # kubeconfig: ~/.kube/config            # in-cluster config is used inside a pod
+  # context: my-context
+  audit_in_serve: false                   # also export pod-audit findings from `pgsentry serve`
+
+serve:
+  bind: 127.0.0.1
+  port: 9188
+  interval_seconds: 30
+
+logging:
+  level: INFO
+  json_format: false

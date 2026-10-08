@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets and local config - never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+*.vault-pass
+.vault_pass
+config.local.yaml
+kubeconfig*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Lab data
+lab/data/
