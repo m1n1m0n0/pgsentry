@@ -169,6 +169,15 @@ def check_replication(db: Querier, cfg: Config) -> CheckResult:
     details: list[dict[str, Any]] = []
 
     expected = cfg.postgres.expected_replicas
+    if expected:
+        # lets a Prometheus alert say "streaming < expected" without hard-coding a number
+        samples.append(
+            Sample(
+                "pgsentry_replication_expected_replicas",
+                float(expected),
+                help="postgres.expected_replicas from the pgsentry config",
+            )
+        )
     if len(streaming) < expected:
         statuses.append(Status.CRIT)
         problems.append(f"only {len(streaming)} of {expected} expected replicas streaming")
@@ -182,10 +191,10 @@ def check_replication(db: Querier, cfg: Config) -> CheckResult:
             status = Status.WARN
             problems.append(f"{name} is in state '{r['state']}'")
         if lag_bytes is not None:
-            status = max(
-                status,
-                grade(lag_bytes, th.replication_lag_bytes.warn, th.replication_lag_bytes.crit),
-            )
+            level = grade(lag_bytes, th.replication_lag_bytes.warn, th.replication_lag_bytes.crit)
+            if level != Status.OK:
+                problems.append(f"{name} is {human_bytes(lag_bytes)} behind")
+            status = max(status, level)
             samples.append(
                 Sample(
                     "pgsentry_replication_lag_bytes",
@@ -195,14 +204,12 @@ def check_replication(db: Querier, cfg: Config) -> CheckResult:
                 )
             )
         if lag_seconds is not None:
-            status = max(
-                status,
-                grade(
-                    lag_seconds,
-                    th.replication_lag_seconds.warn,
-                    th.replication_lag_seconds.crit,
-                ),
+            level = grade(
+                lag_seconds, th.replication_lag_seconds.warn, th.replication_lag_seconds.crit
             )
+            if level != Status.OK:
+                problems.append(f"{name} replay lag {human_duration(lag_seconds)}")
+            status = max(status, level)
             samples.append(
                 Sample(
                     "pgsentry_replication_lag_seconds",
@@ -211,8 +218,6 @@ def check_replication(db: Querier, cfg: Config) -> CheckResult:
                     "Replay lag reported by the primary",
                 )
             )
-        if status != Status.OK and lag_bytes is not None:
-            problems.append(f"{name} replay lag {human_bytes(lag_bytes)}")
         statuses.append(status)
         details.append(
             {

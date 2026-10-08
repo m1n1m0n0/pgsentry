@@ -1,1 +1,151 @@
-groups: []
+# Prometheus alert rules for pgsentry.
+#
+# The numeric thresholds below match the defaults in pgsentry's config
+# (thresholds.*). If you change them there, change them here: Prometheus cannot read
+# pgsentry's YAML. `pgsentry_check_status` (0 OK, 1 WARN, 2 CRIT) always uses the
+# configured thresholds, and PgsentryCheckCritical alerts on it as a catch-all.
+#
+# Validate with:  promtool check rules deploy/monitoring/alerts.yml
+
+groups:
+  - name: pgsentry-replication
+    rules:
+      - alert: PgsentryReplicationLagHigh
+        # Primary's view (bytes) or the standby's own view (bytes received but not replayed).
+        expr: |
+          max by (instance) (pgsentry_replication_lag_bytes) > 16777216
+          or
+          max by (instance) (pgsentry_replica_replay_lag_bytes) > 16777216
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Replication lag above 16 MiB on {{ $labels.instance }}"
+          description: >-
+            A standby is {{ $value | humanize1024 }}B of WAL behind. Reads from it are stale and
+            a failover now would lose or have to replay that backlog.
+
+      - alert: PgsentryReplicationLagCritical
+        expr: |
+          max by (instance) (pgsentry_replication_lag_bytes) > 268435456
+          or
+          max by (instance) (pgsentry_replica_replay_lag_bytes) > 268435456
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Replication lag above 256 MiB on {{ $labels.instance }}"
+          description: "A standby is {{ $value | humanize1024 }}B of WAL behind."
+
+      - alert: PgsentryReplicaDown
+        # Primary sees fewer streaming standbys than postgres.expected_replicas.
+        expr: pgsentry_replication_streaming_replicas < pgsentry_replication_expected_replicas
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Replica down: {{ $labels.instance }} sees {{ $value }} streaming replica(s)"
+          description: >-
+            The primary has fewer streaming standbys than expected. The standby is stopped,
+            cut off from the primary, or still catching up.
+
+      - alert: PgsentryWalReceiverDown
+        # The standby's own view: its receiver stopped, or it is not connected to the primary.
+        expr: pgsentry_replica_wal_receiver_streaming == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Standby {{ $labels.instance }} is not streaming from its primary"
+
+      - alert: PgsentryReplicaReplayPaused
+        expr: pgsentry_replica_replay_paused == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "WAL replay is paused on {{ $labels.instance }}"
+          description: "Unless this is a deliberate maintenance pause, the standby is serving stale data."
+
+      - alert: PgsentrySlotRetainingWal
+        expr: |
+          pgsentry_replication_slot_retained_bytes > 1073741824
+          and on (instance, slot)
+          pgsentry_replication_slot_active == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Inactive slot {{ $labels.slot }} holds {{ $value | humanize1024 }}B of WAL"
+          description: "Nothing is consuming the slot, so the primary keeps WAL until the disk fills."
+
+  - name: pgsentry-backup
+    rules:
+      - alert: PgsentryBackupTooOld
+        expr: pgsentry_backup_age_seconds > 50 * 3600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Last successful backup was {{ $value | humanizeDuration }} ago ({{ $labels.instance }})"
+
+      - alert: PgsentryBackupAging
+        expr: pgsentry_backup_age_seconds > 26 * 3600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Last successful backup was {{ $value | humanizeDuration }} ago ({{ $labels.instance }})"
+
+  - name: pgsentry-database
+    rules:
+      - alert: PgsentryConnectionsHigh
+        expr: pgsentry_connections_used_ratio > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of usable connections in use on {{ $labels.instance }}"
+
+      - alert: PgsentryLongTransaction
+        expr: pgsentry_longest_transaction_seconds > 3600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A transaction on {{ $labels.instance }} has been open for {{ $value | humanizeDuration }}"
+
+  - name: pgsentry-meta
+    rules:
+      - alert: PgsentryCheckCritical
+        # Catch-all using the configured thresholds.
+        expr: pgsentry_check_status == 2
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "pgsentry check '{{ $labels.check }}' is CRITICAL on {{ $labels.instance }}"
+
+      - alert: PgsentryCannotReachDatabase
+        expr: pgsentry_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "pgsentry on {{ $labels.instance }} cannot query its database"
+
+      - alert: PgsentryExporterDown
+        expr: up{job=~"pgsentry-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "pgsentry exporter {{ $labels.instance }} is not being scraped"
+
+      - alert: PgsentryChecksStale
+        expr: time() - pgsentry_last_run_timestamp_seconds > 120
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pgsentry on {{ $labels.instance }} has not finished a check cycle for 2 minutes"

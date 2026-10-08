@@ -58,6 +58,8 @@ def test_replication_missing_replica_is_critical(cfg: Config) -> None:
     assert "0 of 1" in result.message
     streaming = next(s for s in result.samples if s.name.endswith("streaming_replicas"))
     assert streaming.value == 0
+    expected = next(s for s in result.samples if s.name.endswith("expected_replicas"))
+    assert expected.value == 1
 
 
 def test_replication_no_replicas_expected_is_ok(cfg: Config) -> None:
@@ -81,6 +83,15 @@ def test_replication_time_lag_threshold(cfg: Config) -> None:
     assert (
         checks.check_replication(FakeDb({checks.SQL_REPLICATION: rows}), cfg).status == Status.CRIT
     )
+
+
+def test_replication_message_names_the_metric_that_crossed_the_threshold(cfg: Config) -> None:
+    # right after a pause is lifted: no bytes behind, but PG's own time estimate is stale
+    rows = [replica_row(replay_lag_bytes=dec(0), replay_lag_seconds=dec(400))]
+    result = checks.check_replication(FakeDb({checks.SQL_REPLICATION: rows}), cfg)
+    assert result.status == Status.CRIT
+    assert "replay lag 6m" in result.message
+    assert "0 B" not in result.message
 
 
 def test_replication_idle_standby_has_null_lag_and_is_ok(cfg: Config) -> None:

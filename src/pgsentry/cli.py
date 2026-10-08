@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import signal
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,8 +14,9 @@ from rich.console import Console
 
 from pgsentry import __version__
 from pgsentry.config import Config, ConfigError, load_config, load_password
+from pgsentry.exporter import serve
 from pgsentry.logging_setup import configure_logging
-from pgsentry.models import exit_code
+from pgsentry.models import CheckResult, exit_code
 from pgsentry.pg.runner import run_db_checks
 from pgsentry.report import overall, print_results, results_to_json
 
@@ -137,6 +140,27 @@ def db_check(state: AppState, fail_on: str, output_format: str) -> None:
         target = f"{config.postgres.host}:{config.postgres.port}"
         print_results(f"PostgreSQL {target}", results, Console())
     sys.exit(exit_code(overall(results), fail_on))
+
+
+@main.command("serve")
+@pass_state
+def serve_command(state: AppState) -> None:
+    """Run the checks on a timer and expose them at /metrics (Prometheus format)."""
+    config = state.config
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())  # `docker stop` / pod termination
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+
+    def collect() -> list[CheckResult]:
+        # The password is re-read every cycle so a rotated mounted secret is picked up.
+        return run_db_checks(config, load_password())
+
+    try:
+        serve(config.serve, collect, stop)
+    except OSError as exc:
+        raise PgsentryError(
+            f"cannot listen on {config.serve.bind}:{config.serve.port}: {exc.strerror}"
+        ) from exc
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -60,6 +60,36 @@ services:
       timeout: 3s
       retries: 30
 
+  # One pgsentry exporter per database node, built from the repo's Dockerfile.
+  pgsentry-primary:
+    build:
+      context: ..
+    image: pgsentry:lab
+    environment: &exporter_env
+      PGSENTRY_CONFIG: /etc/pgsentry/config.yaml
+      PGSENTRY_DB_HOST: primary          # container-network name, not the 127.0.0.1:55432 of the host
+      PGSENTRY_DB_PORT: "5432"
+      PGSENTRY_DB_PASSWORD: *lab_password
+    volumes:
+      - ./pgsentry-primary.yaml:/etc/pgsentry/config.yaml:ro
+      - ./state:/app/lab/state:ro          # the backup marker written by `make lab-backup`
+    depends_on:
+      primary:
+        condition: service_healthy
+
+  pgsentry-replica:
+    image: pgsentry:lab
+    environment:
+      <<: *exporter_env
+      PGSENTRY_DB_HOST: replica
+    volumes:
+      - ./pgsentry-replica.yaml:/etc/pgsentry/config.yaml:ro
+    depends_on:
+      replica:
+        condition: service_healthy
+      pgsentry-primary:
+        condition: service_started   # waits for the image build
+
   prometheus:
     image: prom/prometheus:v2.55.1
     command:
