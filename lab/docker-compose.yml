@@ -1,0 +1,90 @@
+# Local lab: a PostgreSQL primary with one streaming replica, plus Prometheus and Grafana.
+#
+#   make lab-up        start everything
+#   make lab-down      stop and delete all lab data
+#
+# LAB ONLY. One throwaway password is used for every role and all ports are bound to
+# 127.0.0.1. Never reuse any of this outside your own machine.
+
+name: pgsentry-lab
+
+x-lab-password: &lab_password ${LAB_PASSWORD:-lab-only-password}
+
+services:
+  primary:
+    image: postgres:16.6
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      - -c
+      - listen_addresses=*
+    environment:
+      POSTGRES_PASSWORD: *lab_password
+      REPLICATION_PASSWORD: *lab_password
+      PGSENTRY_PASSWORD: *lab_password
+    volumes:
+      - primary-data:/var/lib/postgresql/data
+      - ./initdb/primary:/docker-entrypoint-initdb.d:ro
+      - ../sql:/sql:ro
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  replica:
+    image: postgres:16.6
+    # The official image only knows how to start a fresh cluster. Replace its entrypoint
+    # with a script that clones the primary first (pg_basebackup), then starts in standby mode.
+    entrypoint: ["/bin/bash", "/lab/replica-entrypoint.sh"]
+    environment:
+      REPLICATION_PASSWORD: *lab_password
+    volumes:
+      - replica-data:/var/lib/postgresql/data
+      - ./replica-entrypoint.sh:/lab/replica-entrypoint.sh:ro
+    depends_on:
+      primary:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+    volumes:
+      - ../deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../deploy/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: *lab_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+      - ./grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ../deploy/monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/pgsentry.json:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  primary-data:
+  replica-data:

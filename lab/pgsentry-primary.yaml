@@ -1,0 +1,21 @@
+# pgsentry config for the lab primary. From your machine it is reached on 127.0.0.1:55432;
+# the docker-compose exporter container overrides host/port with PGSENTRY_DB_HOST/_PORT.
+# The password is passed as PGSENTRY_DB_PASSWORD (the Makefile sets the lab one).
+postgres:
+  host: 127.0.0.1
+  port: 55432
+  dbname: postgres
+  user: pgsentry
+  sslmode: prefer
+  expected_role: primary
+  expected_replicas: 1
+
+backup:
+  file: lab/state/last_backup  # `make lab-backup` writes this file
+  warn_hours: 26
+  crit_hours: 50
+
+serve:
+  bind: 0.0.0.0                # inside the container; compose publishes nothing for it
+  port: 9188
+  interval_seconds: 5

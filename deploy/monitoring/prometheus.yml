@@ -1,0 +1,22 @@
+# Prometheus configuration for the lab. In a real cluster, replace the static targets with
+# your service discovery (or a ServiceMonitor) and keep the two job names: the alert rules
+# use them.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: pgsentry-primary
+    static_configs:
+      - targets: ["pgsentry-primary:9188"]
+        labels:
+          instance_role: primary
+
+  - job_name: pgsentry-replica
+    static_configs:
+      - targets: ["pgsentry-replica:9188"]
+        labels:
+          instance_role: replica

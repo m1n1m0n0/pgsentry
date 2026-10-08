@@ -1,0 +1,13 @@
+# pgsentry config for the lab standby (127.0.0.1:55433 from your machine).
+postgres:
+  host: 127.0.0.1
+  port: 55433
+  dbname: postgres
+  user: pgsentry
+  sslmode: prefer
+  expected_role: replica
+
+serve:
+  bind: 0.0.0.0
+  port: 9188
+  interval_seconds: 5
