@@ -113,11 +113,23 @@ def _receiver_sample(streaming: bool) -> Sample:
 
 
 def fetch_is_replica(db: Querier) -> tuple[bool, str]:
+    """Measures: whether the server is in recovery (a standby) and its version.
+
+    Why it matters: the primary and the standby are checked with different queries, and
+    pg_current_wal_lsn() raises an error on a standby, so every other check branches on this.
+    """
     row = db.query(SQL_ROLE)[0]
-    return bool(row["in_recovery"]), str(row["server_version"])
+    # "16.6 (Debian 16.6-1.pgdg120+1)" -> "16.6"
+    return bool(row["in_recovery"]), str(row["server_version"]).split()[0]
 
 
 def check_role(is_replica: bool, version: str, cfg: Config) -> CheckResult:
+    """Measures: primary or replica, compared with postgres.expected_role if configured.
+
+    Why it matters: after an unplanned failover (or a replica promoted by accident) the
+    node you think is the primary is not. Applications then write to the wrong server or
+    to two servers at once (split brain).
+    """
     role = "replica" if is_replica else "primary"
     expected = cfg.postgres.expected_role
     sample = Sample("pgsentry_is_replica", 1.0 if is_replica else 0.0, help="1 if in recovery")
@@ -135,7 +147,13 @@ def check_role(is_replica: bool, version: str, cfg: Config) -> CheckResult:
 
 
 def check_replication(db: Querier, cfg: Config) -> CheckResult:
-    """Primary-side view: which standbys are connected and how far behind they are."""
+    """Measures: connected standbys, their state, and replay lag in bytes and seconds.
+
+    Why it matters: a standby that is behind loses more data if the primary dies and serves
+    stale reads meanwhile. A standby missing from this list is down or cut off, and
+    pg_stat_replication gives no error for that, the row just disappears, which is why
+    postgres.expected_replicas exists.
+    """
     rows = db.query(SQL_REPLICATION)
     streaming = [r for r in rows if r["state"] == "streaming"]
     th = cfg.thresholds
@@ -221,10 +239,13 @@ def check_replication(db: Querier, cfg: Config) -> CheckResult:
 
 
 def check_wal_receiver(db: Querier, cfg: Config) -> CheckResult:
-    """Standby-side view: is my connection to the primary up, and how far behind am I?
+    """Measures: whether this standby's WAL receiver is streaming, WAL received but not yet
+    replayed, and whether replay is paused.
 
-    This is the only check that can notice a standby that lost its primary, because the
-    primary's pg_stat_replication simply loses the row instead of reporting a problem.
+    Why it matters: the primary cannot see a standby that has lost its connection (the row
+    just vanishes) and cannot see a paused replay at all. Only the standby knows that its
+    receiver is gone, or that it holds WAL it is not applying, which means reads are stale
+    and a promotion would have to replay the backlog first.
     """
     th = cfg.thresholds
     receiver = db.query(SQL_WAL_RECEIVER)
@@ -239,14 +260,19 @@ def check_wal_receiver(db: Querier, cfg: Config) -> CheckResult:
     row = receiver[0]
     replay = db.query(SQL_REPLAY)[0]
     gap = _num(replay["replay_gap_bytes"]) or 0.0
-    lag_seconds = _num(replay["replay_lag_seconds"]) or 0.0
+    # NULL until the first commit has been replayed since the standby started: unknown,
+    # which is not the same as zero.
+    lag_seconds = _num(replay["replay_lag_seconds"])
     paused = bool(replay["replay_paused"])
 
     statuses = [
         Status.OK if row["status"] == "streaming" else Status.WARN,
         grade(gap, th.replication_lag_bytes.warn, th.replication_lag_bytes.crit),
-        grade(lag_seconds, th.replication_lag_seconds.warn, th.replication_lag_seconds.crit),
     ]
+    if lag_seconds is not None:
+        statuses.append(
+            grade(lag_seconds, th.replication_lag_seconds.warn, th.replication_lag_seconds.crit)
+        )
     problems: list[str] = []
     if row["status"] != "streaming":
         problems.append(f"receiver status is '{row['status']}'")
@@ -254,9 +280,10 @@ def check_wal_receiver(db: Querier, cfg: Config) -> CheckResult:
         statuses.append(Status.WARN)
         problems.append("WAL replay is paused")
     if max(statuses[1:]) != Status.OK:
-        problems.append(
-            f"{human_bytes(gap)} received but not replayed ({human_duration(lag_seconds)})"
-        )
+        behind = f"{human_bytes(gap)} received but not replayed"
+        if lag_seconds is not None:
+            behind += f" ({human_duration(lag_seconds)})"
+        problems.append(behind)
 
     sender = f"{row['sender_host']}:{row['sender_port']}"
     message = (
@@ -264,21 +291,26 @@ def check_wal_receiver(db: Querier, cfg: Config) -> CheckResult:
         if problems
         else f"streaming from {sender}, replay gap {human_bytes(gap)}"
     )
-    samples = (
+    samples = [
         _receiver_sample(row["status"] == "streaming"),
         Sample(
             "pgsentry_replica_replay_lag_bytes",
             gap,
             help="WAL received but not yet replayed (standby's view)",
         ),
-        Sample("pgsentry_replica_replay_lag_seconds", lag_seconds, help="Replay delay in seconds"),
         Sample("pgsentry_replica_replay_paused", 1.0 if paused else 0.0, help="1 if replay paused"),
-    )
+    ]
+    if lag_seconds is not None:
+        samples.append(
+            Sample(
+                "pgsentry_replica_replay_lag_seconds", lag_seconds, help="Replay delay in seconds"
+            )
+        )
     return CheckResult(
         "wal_receiver",
         worst(statuses),
         message,
-        samples,
+        tuple(samples),
         {
             "status": row["status"],
             "sender": f"{row['sender_host']}:{row['sender_port']}",
@@ -292,6 +324,11 @@ def check_wal_receiver(db: Querier, cfg: Config) -> CheckResult:
 
 
 def check_slots(db: Querier, cfg: Config, is_replica: bool) -> CheckResult:
+    """Measures: per slot, whether a consumer is attached and how much WAL it holds back.
+
+    Why it matters: the server keeps WAL for a slot until its consumer reads it. A slot
+    whose standby is gone grows without limit and fills the disk, which stops the primary.
+    """
     th = cfg.thresholds.slot_retained_bytes
     rows = db.query(SQL_SLOTS_STANDBY if is_replica else SQL_SLOTS_PRIMARY)
     if not rows:
@@ -352,6 +389,12 @@ def check_slots(db: Querier, cfg: Config, is_replica: bool) -> CheckResult:
 
 
 def check_connections(db: Querier, cfg: Config) -> CheckResult:
+    """Measures: client and walsender backends as a share of the connections non-superusers
+    may use (max_connections minus superuser_reserved_connections).
+
+    Why it matters: at 100% new connections are refused ("too many clients") and the
+    application sees errors; a leaking pool shows up here first.
+    """
     th = cfg.thresholds.connection_usage_ratio
     row = db.query(SQL_CONNECTIONS)[0]
     used = int(row["used"])
@@ -374,6 +417,12 @@ def check_connections(db: Querier, cfg: Config) -> CheckResult:
 
 
 def check_long_transactions(db: Querier, cfg: Config) -> CheckResult:
+    """Measures: age of the oldest open transaction, including 'idle in transaction'.
+
+    Why it matters: an open transaction stops VACUUM from removing dead rows newer than its
+    snapshot (table bloat), holds locks that block migrations, and on a primary can delay
+    cleanup that standbys are waiting for.
+    """
     th = cfg.thresholds.long_transaction_seconds
     rows = db.query(SQL_LONG_TRANSACTIONS)
     oldest = _num(rows[0]["xact_age_seconds"]) if rows else 0.0

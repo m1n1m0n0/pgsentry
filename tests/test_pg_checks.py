@@ -154,6 +154,16 @@ def test_wal_receiver_growing_gap_goes_critical(cfg: Config) -> None:
     assert "not replayed" in result.message
 
 
+def test_wal_receiver_unknown_time_lag_is_not_reported_as_zero(cfg: Config) -> None:
+    # pg_last_xact_replay_timestamp() is NULL until a commit has been replayed
+    replay = replay_row(replay_gap_bytes=dec(70 * MIB), replay_lag_seconds=None, replay_paused=True)
+    db = FakeDb({checks.SQL_WAL_RECEIVER: [RECEIVER_OK], checks.SQL_REPLAY: [replay]})
+    result = checks.check_wal_receiver(db, cfg)
+    assert result.status == Status.WARN
+    assert "0.0s" not in result.message
+    assert all(s.name != "pgsentry_replica_replay_lag_seconds" for s in result.samples)
+
+
 def test_wal_receiver_not_streaming_status_warns(cfg: Config) -> None:
     receiver = {**RECEIVER_OK, "status": "starting"}
     db = FakeDb({checks.SQL_WAL_RECEIVER: [receiver], checks.SQL_REPLAY: [replay_row()]})

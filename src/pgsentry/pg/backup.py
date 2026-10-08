@@ -71,7 +71,12 @@ def check_backup(
     now: datetime | None = None,
     s3_factory: S3ClientFactory = _default_s3_client,
 ) -> CheckResult | None:
-    """Returns None when no backup marker is configured (the check is then skipped)."""
+    """Measures: time since the backup job last recorded a success (file content/mtime, or
+    the S3 object's LastModified). Returns None when no marker is configured.
+
+    Why it matters: a replica is not a backup. It replays a DROP TABLE as faithfully as
+    anything else. A backup job that has silently stopped is only noticed when it is needed.
+    """
     if not cfg.enabled:
         return None
     now = now or datetime.now(UTC)
