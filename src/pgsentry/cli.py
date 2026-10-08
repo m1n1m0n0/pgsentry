@@ -8,10 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import click
+from rich.console import Console
 
 from pgsentry import __version__
 from pgsentry.config import Config, ConfigError, load_config, load_password
 from pgsentry.logging_setup import configure_logging
+from pgsentry.models import exit_code
+from pgsentry.pg.runner import run_db_checks
+from pgsentry.report import overall, print_results, results_to_json
 
 EXIT_CONFIG_ERROR = 3
 
@@ -87,6 +91,47 @@ def show_config(state: AppState) -> None:
     effective = json.loads(state.config.model_dump_json())
     effective["postgres"]["password"] = "(set)" if has_password else "(not set)"
     click.echo(json.dumps(effective, indent=2))
+
+
+fail_on_option = click.option(
+    "--fail-on",
+    type=click.Choice(["warn", "crit", "never"]),
+    default="crit",
+    show_default=True,
+    help="Lowest severity that makes the command exit non-zero.",
+)
+format_option = click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"]),
+    default="table",
+    show_default=True,
+)
+
+
+@main.group()
+def db() -> None:
+    """PostgreSQL health checks."""
+
+
+@db.command("check")
+@fail_on_option
+@format_option
+@pass_state
+def db_check(state: AppState, fail_on: str, output_format: str) -> None:
+    """Run all database checks once and print a report."""
+    config = state.config
+    try:
+        password = load_password()
+    except ConfigError as exc:
+        raise PgsentryError(str(exc)) from exc
+    results = run_db_checks(config, password)
+    if output_format == "json":
+        click.echo(results_to_json(results))
+    else:
+        target = f"{config.postgres.host}:{config.postgres.port}"
+        print_results(f"PostgreSQL {target}", results, Console())
+    sys.exit(exit_code(overall(results), fail_on))
 
 
 if __name__ == "__main__":  # pragma: no cover
