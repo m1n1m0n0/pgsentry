@@ -20,6 +20,11 @@ def test_config_command_never_prints_the_password(tmp_path: Path) -> None:
     assert '"password": "(set)"' in result.output
 
 
+def test_usage_error_does_not_look_like_a_critical_result() -> None:
+    result = CliRunner().invoke(main, ["db", "check", "--no-such-flag"])
+    assert result.exit_code == 3
+
+
 def test_bad_config_exits_with_code_3(tmp_path: Path) -> None:
     bad = tmp_path / "bad.yaml"
     bad.write_text("postgres:\n  port: not-a-number\n", encoding="utf-8")

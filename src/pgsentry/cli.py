@@ -19,6 +19,11 @@ from pgsentry.report import overall, print_results, results_to_json
 
 EXIT_CONFIG_ERROR = 3
 
+# Click exits with 2 for usage errors (an unknown flag, a missing argument). In this tool
+# 2 means CRITICAL, and a CI job must be able to tell "the database is down" from "I typed
+# the command wrong", so usage errors share the configuration-error code instead.
+click.UsageError.exit_code = EXIT_CONFIG_ERROR
+
 
 class PgsentryError(click.ClickException):
     """A problem the user can fix (bad config, missing file). Exits with code 3."""
