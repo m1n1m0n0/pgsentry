@@ -31,6 +31,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # scan the whole history, not just the tip
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The CLI image, not gitleaks-action: the action scans "<first commit>^..HEAD", which
+      # git rejects when the first commit is the root commit.
+      - run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.2 detect --source /repo --redact --no-banner
